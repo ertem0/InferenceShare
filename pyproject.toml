@@ -1,0 +1,35 @@
+[project]
+name = "sharedinference"
+version = "0.1.0"
+description = "A research prototype for distributed Mixture-of-Experts inference"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "huggingface-hub>=1.32.0",
+    "numpy>=2.5.3",
+    "safetensors>=0.8.0",
+    "torch>=2.14.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+]
+reference = [
+    "transformers==5.17.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# Preserve the package name specified in ARCHITECTURE.md.
+"src/SharedInference/**/__init__.py" = ["N999"]
