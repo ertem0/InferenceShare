@@ -34,9 +34,7 @@ def compare_reference(root, layer_id, expert_id):
     inputs = torch.randn(4, config.hidden_size, generator=generator)
     with torch.inference_mode():
         expected = reference(inputs)
-    actual = LocalExpertExecutor(layer_id, expert_id, expert).execute(
-        layer_id, expert_id, inputs
-    )
+    actual = LocalExpertExecutor(expert).execute(layer_id, expert_id, inputs)
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
 
 

@@ -2,7 +2,11 @@ import pytest
 import torch
 from torch import nn
 
-from SharedInference.experts import ExpertExecutor, LocalExpertExecutor
+from SharedInference.experts import (
+    ExpertExecutor,
+    IdentifiedExpert,
+    LocalExpertExecutor,
+)
 
 
 class SmallExpert(nn.Module):
@@ -23,7 +27,9 @@ class SmallExpert(nn.Module):
 
 
 def test_selected_expert_matches_expected_values_repeatedly():
-    executor: ExpertExecutor = LocalExpertExecutor(3, 7, SmallExpert())
+    executor: ExpertExecutor = LocalExpertExecutor(
+        IdentifiedExpert(3, 7, SmallExpert())
+    )
     inputs = torch.tensor([[2.0, 1.0], [-1.0, 2.0], [0.0, -2.0]])
     expected = torch.tensor([[5.5, 2.5], [5.5, 10.5], [0.5, -0.5]])
     original = inputs.clone()
@@ -43,7 +49,7 @@ def test_unknown_identity_fails_before_execution(layer_id, expert_id):
         def forward(self, hidden_states):
             pytest.fail("Unknown identities must not execute the expert")
 
-    executor = LocalExpertExecutor(3, 7, MustNotRun())
+    executor = LocalExpertExecutor(IdentifiedExpert(3, 7, MustNotRun()))
     with pytest.raises(KeyError, match="Unknown expert"):
         executor.execute(layer_id, expert_id, torch.ones(1, 2))
 
@@ -61,7 +67,7 @@ def test_execution_uses_eval_and_inference_mode():
             return self.dropout(hidden_states) * 2
 
     expert = ModeExpert()
-    executor = LocalExpertExecutor(0, 0, expert)
+    executor = LocalExpertExecutor(IdentifiedExpert(0, 0, expert))
     assert not expert.training
     expert.train()
     output = executor.execute(0, 0, torch.ones(2, 3, requires_grad=True))
@@ -71,19 +77,19 @@ def test_execution_uses_eval_and_inference_mode():
 
 @pytest.mark.parametrize("shape", [(), (2,), (1, 2, 3)])
 def test_invalid_input_rank(shape):
-    executor = LocalExpertExecutor(0, 0, nn.Identity())
+    executor = LocalExpertExecutor(IdentifiedExpert(0, 0, nn.Identity()))
     with pytest.raises(ValueError, match="hidden_states must have shape"):
         executor.execute(0, 0, torch.zeros(shape))
 
 
 def test_invalid_input_type():
-    executor = LocalExpertExecutor(0, 0, nn.Identity())
+    executor = LocalExpertExecutor(IdentifiedExpert(0, 0, nn.Identity()))
     with pytest.raises(TypeError, match="hidden_states must be a torch.Tensor"):
         executor.execute(0, 0, [[1.0, 2.0]])
 
 
 def test_invalid_output_shape():
-    executor = LocalExpertExecutor(0, 0, nn.Linear(2, 3))
+    executor = LocalExpertExecutor(IdentifiedExpert(0, 0, nn.Linear(2, 3)))
     with pytest.raises(ValueError, match="Expert output shape"):
         executor.execute(0, 0, torch.ones(1, 2))
 
@@ -93,17 +99,17 @@ def test_invalid_output_type():
         def forward(self, hidden_states):
             return (hidden_states,)
 
-    executor = LocalExpertExecutor(0, 0, TupleExpert())
+    executor = LocalExpertExecutor(IdentifiedExpert(0, 0, TupleExpert()))
     with pytest.raises(TypeError, match="Expert output must be a torch.Tensor"):
         executor.execute(0, 0, torch.ones(1, 2))
 
 
 def test_model_errors_propagate():
-    executor = LocalExpertExecutor(0, 0, SmallExpert())
+    executor = LocalExpertExecutor(IdentifiedExpert(0, 0, SmallExpert()))
     with pytest.raises(RuntimeError):
         executor.execute(0, 0, torch.ones(1, 4))
 
 
 def test_empty_token_batch():
-    executor = LocalExpertExecutor(0, 0, SmallExpert())
+    executor = LocalExpertExecutor(IdentifiedExpert(0, 0, SmallExpert()))
     assert executor.execute(0, 0, torch.empty(0, 2)).shape == (0, 2)

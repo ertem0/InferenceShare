@@ -86,7 +86,9 @@ Implement a worker capable of hosting and executing multiple experts locally.
 Requirements:
 
 - create an `ExpertWorker`
-- allow multiple experts to be registered or loaded
+- register multiple already constructed local PyTorch expert modules supplied by initialization code
+- expose registration as the handoff point for the future coordinator-weight receiver in Milestone 5
+- perform no checkpoint loading, downloads, or remote execution inside the worker
 - identify experts using `(layer_id, expert_id)`
 - execute the requested expert on a provided hidden-state tensor
 - return the resulting tensor

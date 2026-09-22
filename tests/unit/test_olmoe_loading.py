@@ -13,16 +13,17 @@ def test_selects_expert_across_shards(olmoe_checkpoint, identity):
     root, _, experts = olmoe_checkpoint
     weights = experts[identity]
     expert = load_olmoe_expert(root, *identity)
+    assert (expert.layer_id, expert.expert_id) == identity
     x = torch.tensor([[1.0, -2.0], [0.5, 1.0]])
     gate = x @ weights["gate_proj.weight"].T
     expected = (
         (gate * torch.sigmoid(gate)) * (x @ weights["up_proj.weight"].T)
     ) @ weights["down_proj.weight"].T
-    executor = LocalExpertExecutor(*identity, expert)
+    executor = LocalExpertExecutor(expert)
     for _ in range(2):
         torch.testing.assert_close(executor.execute(*identity, x), expected)
-    assert not expert.training
-    assert all(not p.requires_grad for p in expert.parameters())
+    assert not expert.module.training
+    assert all(not p.requires_grad for p in expert.module.parameters())
 
 
 def test_only_requested_tensors_are_read(olmoe_checkpoint, monkeypatch):
@@ -66,7 +67,7 @@ def test_unknown_expert(olmoe_checkpoint, identity):
 
 def test_explicit_dtype_conversion(olmoe_checkpoint):
     expert = load_olmoe_expert(olmoe_checkpoint[0], 0, 0, dtype=torch.float64)
-    assert all(p.dtype == torch.float64 for p in expert.parameters())
+    assert all(p.dtype == torch.float64 for p in expert.module.parameters())
 
 
 def test_missing_shard(olmoe_checkpoint):

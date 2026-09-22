@@ -8,6 +8,8 @@ from safetensors import safe_open
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from SharedInference.experts.identified import IdentifiedExpert
+
 
 class OlmoeExpert(nn.Module):
     """Bias-free SiLU gated MLP used by the OLMoE checkpoint."""
@@ -31,9 +33,10 @@ def load_olmoe_expert(
     *,
     dtype: torch.dtype | None = None,
     device: str | torch.device = "cpu",
-) -> OlmoeExpert:
+) -> IdentifiedExpert:
     """Load only three selected tensors, preserving checkpoint dtype by default.
 
+    Returns identity metadata alongside the module.
     No Hub access or full-model construction occurs. Only indexed checkpoints
     with separate gate/up/down expert weights are supported. Returned weights
     own their storage and do not retain shard memory mappings. Missing files
@@ -107,4 +110,4 @@ def load_olmoe_expert(
     with torch.device("meta"):
         expert = OlmoeExpert(hidden, intermediate)
     expert.load_state_dict(weights, strict=True, assign=True)
-    return expert.eval().requires_grad_(False)
+    return IdentifiedExpert(layer_id, expert_id, expert.eval().requires_grad_(False))

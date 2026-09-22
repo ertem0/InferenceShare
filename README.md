@@ -8,7 +8,8 @@ Different nodes store different experts. During inference, hidden states are rou
 
 Early research prototype. Milestone 1 local execution is implemented with
 offline correctness tests. Milestone 2 includes checkpoint downloading and
-selective OLMoE expert loading. Real-checkpoint validation requires a local download.
+selective OLMoE expert loading. Milestone 3 adds local multi-expert workers.
+Real-checkpoint validation requires a local download.
 
 See [PROJECT.md](PROJECT.md) for the current scope and milestones.
 
@@ -31,10 +32,10 @@ Bind a PyTorch expert to a layer and expert ID, then execute it locally:
 import torch
 from torch import nn
 
-from SharedInference.experts import LocalExpertExecutor
+from SharedInference.experts import IdentifiedExpert, LocalExpertExecutor
 
 expert = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 4))
-executor = LocalExpertExecutor(layer_id=0, expert_id=3, expert=expert)
+executor = LocalExpertExecutor(IdentifiedExpert(layer_id=0, expert_id=3, module=expert))
 outputs = executor.execute(0, 3, torch.ones(2, 4))
 assert outputs.shape == (2, 4)
 ```
@@ -47,8 +48,9 @@ device; no automatic conversion is performed. Unknown layer/expert pairs raise
 errors from the underlying module propagate unchanged.
 
 The model-independent `ExpertExecutor` protocol defines the common execution
-interface. Each local executor binds one expert; worker registration, routing,
-and networking belong to later milestones.
+interface. Each local executor binds one expert. `ExpertWorker` implements the
+same interface for multiple registered local experts. Routing and networking
+belong to later milestones.
 
 Run the offline tests and code checks with:
 
@@ -57,6 +59,27 @@ uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 ```
+
+## Host experts in a worker
+
+```python
+from SharedInference.experts import ExpertWorker, IdentifiedExpert
+
+worker = ExpertWorker()
+# Initialization supplies an already constructed local PyTorch module.
+worker.register(IdentifiedExpert(layer_id=0, expert_id=3, module=expert))
+outputs = worker.execute(0, 3, torch.ones(2, 4))
+```
+
+This example uses the four-dimensional expert from the first usage example.
+Identity fields in `IdentifiedExpert` are immutable; the contained module remains mutable.
+Workers start empty. `register()` is the handoff point for the future receiver,
+which will reconstruct modules from weights sent by the coordinator in
+milestone 5. Workers do not load checkpoints, download weights, or host remote
+executors. They retain supplied modules in memory for local execution.
+Register experts before serving requests; concurrent registration is not supported.
+Duplicate identities raise `ValueError`, unknown identities raise `KeyError`,
+and execution uses the existing local executor's inference and validation behavior.
 
 ## Download and load OLMoE experts
 
@@ -92,12 +115,14 @@ from SharedInference.model.olmoe import load_olmoe_expert
 
 checkpoint = Path.home() / "Models" / OLMOE_MODEL_ID / OLMOE_REVISION
 expert = load_olmoe_expert(checkpoint, layer_id=0, expert_id=3, dtype=torch.float32)
-executor = LocalExpertExecutor(0, 3, expert)
-outputs = executor.execute(0, 3, torch.ones(2, expert.gate_proj.in_features))
+executor = LocalExpertExecutor(expert)
+outputs = executor.execute(0, 3, torch.ones(2, expert.module.gate_proj.in_features))
 ```
 
 The loader reads only the selected expert's three tensors, including when they
-span shards. It returns an evaluation-mode module with gradients disabled.
+span shards. It returns an `IdentifiedExpert` containing the selected IDs and an evaluation-mode
+module with gradients disabled. Pass this object directly to `worker.register(expert)`;
+registration does not require repeating the IDs.
 By default it preserves the stored dtype on CPU; `dtype` and `device` provide
 explicit conversion. It supports indexed OLMoE checkpoints with separate
 SiLU gate/up/down projection weights. Missing files, unknown IDs, invalid
@@ -122,7 +147,7 @@ Node initialization and expert distribution remain in milestone 5.
 ## Project structure
 
 ```text
-src/SharedInference/experts/   Execution protocol and local executor
+src/SharedInference/experts/   Execution protocol, local executor, and worker
 src/SharedInference/model/   Checkpoint download and OLMoE adapter
 tests/unit/                  Deterministic execution and loading tests
 tests/integration/           Optional Transformers reference comparisons

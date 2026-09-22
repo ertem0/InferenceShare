@@ -1,11 +1,13 @@
 """Local inference for a single bound PyTorch expert."""
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor
+
+from .identified import IdentifiedExpert
 
 
 class LocalExpertExecutor:
-    """Bind one expert to its layer and expert IDs.
+    """Execute one expert using the identity carried with its module.
 
     The supplied module must map [num_tokens, hidden_size] to the same shape.
     This executor sets the module (including its children) to evaluation mode
@@ -14,14 +16,13 @@ class LocalExpertExecutor:
     unchanged, including incompatible input dtype, device, or hidden width.
     """
 
-    def __init__(self, layer_id: int, expert_id: int, expert: nn.Module) -> None:
-        self._identity = (layer_id, expert_id)
+    def __init__(self, expert: IdentifiedExpert) -> None:
         self._expert = expert
-        self._expert.eval()
+        self._expert.module.eval()
 
     def execute(self, layer_id: int, expert_id: int, hidden_states: Tensor) -> Tensor:
         """Execute the bound expert, raising on unknown IDs or invalid shapes."""
-        if (layer_id, expert_id) != self._identity:
+        if (layer_id, expert_id) != (self._expert.layer_id, self._expert.expert_id):
             raise KeyError(
                 f"Unknown expert: layer_id={layer_id}, expert_id={expert_id}"
             )
@@ -30,9 +31,9 @@ class LocalExpertExecutor:
         if hidden_states.ndim != 2:
             raise ValueError("hidden_states must have shape [num_tokens, hidden_size]")
 
-        self._expert.eval()
+        self._expert.module.eval()
         with torch.inference_mode():
-            output = self._expert(hidden_states)
+            output = self._expert.module(hidden_states)
 
         if not isinstance(output, Tensor):
             raise TypeError("Expert output must be a torch.Tensor")
