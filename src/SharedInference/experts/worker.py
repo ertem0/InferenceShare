@@ -9,8 +9,8 @@ from .local import LocalExpertExecutor
 class ExpertWorker:
     """Host already constructed expert modules on one node.
 
-    Initialization code supplies modules through register(). In milestone 5,
-    a receiver will reconstruct them from coordinator-supplied weights before
+    Initialization code supplies modules through register(). The startup
+    receiver reconstructs them from coordinator-supplied weights before
     registration. This worker performs no downloads, checkpoint reads, weight
     reconstruction, or remote calls. Register experts before serving requests.
     """
@@ -21,7 +21,7 @@ class ExpertWorker:
     def register(self, expert: IdentifiedExpert) -> None:
         """Accept an identified local module from initialization; reject duplicate identities.
 
-        This is the handoff point for the future receiver. The module is held
+        This is the handoff point for the startup receiver. The module is held
         by reference and set to evaluation mode by LocalExpertExecutor.
         """
         if not isinstance(expert, IdentifiedExpert):

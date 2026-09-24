@@ -75,7 +75,7 @@ Acceptance criteria:
 - automated loading tests use small local fixtures without requiring Hugging Face access
 
 Sending weights to worker nodes and initializing remote workers belong to
-Milestone 5, after the worker and transport layer are available.
+Milestone 4, including the communication needed for startup transfers.
 
 ---
 
@@ -87,7 +87,7 @@ Requirements:
 
 - create an `ExpertWorker`
 - register multiple already constructed local PyTorch expert modules supplied by initialization code
-- expose registration as the handoff point for the future coordinator-weight receiver in Milestone 5
+- expose registration as the handoff point for the future coordinator-weight receiver in Milestone 4
 - perform no checkpoint loading, downloads, or remote execution inside the worker
 - identify experts using `(layer_id, expert_id)`
 - execute the requested expert on a provided hidden-state tensor
@@ -102,59 +102,106 @@ Acceptance criteria:
 
 ---
 
-### Milestone 4 — Tensor Transport
+### Milestone 4 — Coordinator Startup and Worker Initialization
 
-Implement communication between two processes without integrating the model yet.
+Build coordinator initialization around the local checkpoint loading from
+Milestone 2 and the expert worker from Milestone 3. Workers request assignments
+using a configured memory budget. The coordinator sends every assigned expert
+on every system startup, without relying on a persistent worker cache.
 
-Requirements:
+Coordinator requirements:
 
-- establish communication between two processes
-- send a PyTorch tensor from one process to another
-- serialize and deserialize tensors
-- preserve tensor shape and dtype
-- return a tensor response
-- measure:
-  - serialization time
-  - payload size
-  - transmission time
+- maintain an inventory of every `(layer_id, expert_id)` in the model, including unallocated experts, assigned node, and allocation status (unallocated, loading, or ready)
+- listen for worker initialization requests containing the worker's allocated memory budget
+- assume all experts have the same weight-storage size in the selected loading dtype
+- allocate the first unallocated experts in ascending `(layer_id, expert_id)` order, up to `min(unallocated_count, memory_budget_bytes // expert_size_bytes)`
+- treat the reported budget as expert weight storage; the worker must leave memory outside this budget for loading overhead and execution
+- reserve assignments before transferring weights so simultaneous initialization requests cannot assign the same expert to different nodes
+- load assigned experts from the coordinator's local checkpoint and send their identities, reconstruction metadata, and weights
+- send an explicit assignment list so each worker knows which experts it must load
+- receive readiness or load-error reports identifying failed experts
+- resend only failed experts, with at most three total attempts per expert, preserving successfully loaded experts
+- after attempts are exhausted or an expert is rejected, release its assignment while retaining its inventory entry as unallocated
+- confirm the reduced assignment with the worker before marking it ready; readiness requires successful loading of every expert in the final confirmed assignment
+- monitor each node with heartbeats and a timeout
+- on disconnect or health timeout, release all of that node's assignments, including reservations, and mark those experts unallocated
+
+Worker requirements:
+
+- start with the coordinator address and an allocated memory budget, then send an initialization request
+- receive the assignment list, reconstruction metadata, and expert weights
+- reconstruct fresh local modules and register them in `ExpertWorker`; keep checkpoint access and communication outside `ExpertWorker`
+- report readiness when all assigned experts load successfully, or report a load error listing the failed experts
+- retain successful experts during retries and handle repeated transfers without duplicate-registration failures
+- accept and acknowledge a reduced final assignment after failed experts are released
+- participate in health monitoring and, once ready, wait for execution instructions; remote execution is implemented in Milestone 6
+
+Communication requirements:
+
+- use TCP between processes on the same machine for initial tests
+- listen on separate control and tensor ports; initialize and exchange heartbeats on the control connection
+- after initialization confirmation, attach the worker's tensor connection using its node ID and session token, rejecting unknown or duplicate attachments
+- mark a node ready only after its final expert assignment is loaded and its tensor connection is attached; apply a timeout to attachment
+- keep identified connections in node sessions and unidentified sockets in a pending set; public snapshots exclude sockets and session tokens
+- close both channels and release assignments if either channel fails; tensor execution messages remain deferred to later milestones
+- frame messages as `[length][message type][metadata length][metadata][payload]`, with an explicit metadata boundary
+- support CPU weight tensors with float32, float16, and bfloat16 dtypes
+- keep model-specific reconstruction outside the communication layer
+- transfer weights one-way from coordinator to worker, with readiness and error reports flowing back
+- fail explicitly on missing weights, incompatible metadata, malformed messages, failed transfers, or initialization timeouts
+- keep startup weight distribution separate from inference requests while reusing the communication abstraction
 
 Acceptance criteria:
 
-- Process A can send a tensor to Process B
-- Process B receives an equivalent tensor
-- Process B can return a tensor to Process A
-- received tensors preserve shape, dtype, and values within the expected tolerance
-- transport code contains no model-specific logic
+- allocation selects the first unallocated equal-sized experts that fit the reported budget, without duplicate ownership
+- a receiving worker can reconstruct, register, and locally execute its assigned experts using coordinator-supplied weights
+- execution on the receiving worker matches local execution with the same weights and inputs within floating-point tolerance
+- retries target only failed experts and stop after three total attempts per expert
+- successful experts remain loaded when other experts fail; failed assignments become unallocated and the reduced assignment is confirmed before readiness
+- disconnected or unhealthy nodes release all their assignments
+- restarting the system sends all assigned expert weights again; workers do not download the model from Hugging Face
+- automated tests use small local fixtures and cover allocation, reconstruction, retries, reduced assignments, health monitoring, and transfers between local processes without Hugging Face access
+
+Persistent node caching, incremental weight transfers, and automatic redistribution
+after a disconnect are deferred. Released experts are eligible for subsequent
+initialization requests. The runtime placement interface remains in Milestone 7;
+this milestone owns only the startup allocation inventory. Milestone 5 builds on
+this communication layer for standalone tensor exchanges and transport measurements.
 
 ---
 
-### Milestone 5 — Startup Expert Distribution and Worker Initialization
+### Milestone 5 — Tensor Transport
 
-Use the local checkpoint loading from Milestone 2, the expert worker from
-Milestone 3, and the transport layer from Milestone 4 to initialize worker nodes.
-The coordinator sends every assigned remote expert on every system startup.
+Build on Milestone 4's communication layer to support and measure standalone
+tensor transfers between two processes on the same machine, without integrating
+model inference yet.
 
 Requirements:
 
-- accept an explicit list of expert assignments for each node during initialization
-- load assigned experts from the coordinator's local checkpoint
-- send every assigned remote expert's weights and the metadata needed to reconstruct it using the transport layer
-- reconstruct and register the assigned experts in each receiving node's `ExpertWorker`
-- confirm that all required workers are ready before inference begins
-- fail explicitly on missing weights, incompatible metadata, failed transfers, or initialization timeouts
-- keep startup weight distribution separate from inference requests while reusing the transport abstraction
+- expose independent tensor send and receive operations, with request/response built on top
+- support one-way tensor transfers without requiring a tensor response
+- support a tensor echo request/response
+- serialize and deserialize CPU tensors of arbitrary shape with float32, float16, or bfloat16 dtype
+- preserve tensor shape, dtype, and values; strides and gradients need not be preserved
+- fail explicitly on unsupported inputs, malformed messages, disconnects, or timeouts
+- keep transport code independent of model-specific logic and reusable by startup initialization
+- measure:
+  - serialization and deserialization time
+  - tensor payload size and total framed message size in bytes
+  - socket-send duration: time spent handing the framed message to the socket, not confirmed delivery time
+  - echo round-trip duration: from starting the request send until the complete response arrives, including server processing
+  - total echo invocation duration: from before request serialization through response deserialization
 
 Acceptance criteria:
 
-- a receiving worker can reconstruct, register, and locally execute its assigned experts using weights sent by the coordinator
-- execution on the receiving worker matches local execution with the same weights and inputs within floating-point tolerance
-- restarting the system sends all assigned remote expert weights again, without relying on a persistent node cache
-- receiving nodes obtain only their assigned experts and do not need to download the model from Hugging Face
-- initialization reports readiness only after all required experts have been received and loaded
-- automated initialization tests cover transfers between processes using small local fixtures without requiring Hugging Face access
-
-Persistent node caching and incremental weight transfers are deferred. The
-runtime placement interface remains in Milestone 7.
+- Process A can send a tensor to Process B independently of a response
+- Process B receives an equivalent tensor and can return a tensor response for an echo exchange
+- received tensors preserve shape, dtype, and values within the expected tolerance
+- automated tests cover one-way and echo transfers between local processes with explicit readiness synchronization
+- tests cover supported dtypes, arbitrary shapes, empty tensors, noncontiguous inputs, and controlled failures
+- timing and byte-count measurements are available for transfers; round-trip and invocation timings apply to echo exchanges
+- no synchronized clocks or true one-way network latency measurements are required
+- startup expert distribution from Milestone 4 continues to work through the shared communication layer
 
 ---
 
@@ -321,7 +368,7 @@ Features listed under **Future Scope** are not required for V1.
 - Python
 - PyTorch
 
-Transport measurements are defined in [Milestone 4](#milestone-4--tensor-transport),
+Transport measurements are defined in [Milestone 5](#milestone-5--tensor-transport),
 and the full benchmarking requirements in [Milestone 10](#milestone-10--benchmarking-and-instrumentation).
 
 ## Architecture
