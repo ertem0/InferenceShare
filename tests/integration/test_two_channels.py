@@ -59,11 +59,11 @@ def attach(server, connection, confirmed):
 def test_ready_requires_second_port_and_snapshot_excludes_connections(olmoe_checkpoint):
     with (
         server_for(olmoe_checkpoint[0]) as server,
-        socket.create_connection(server.address, timeout=3) as control,
+        socket.create_connection(server.control_address, timeout=3) as control,
     ):
         confirmed = initialize_control(server, control)
         node_id = confirmed["node_id"]
-        assert server.address[1] != server.tensor_address[1]
+        assert server.control_address[1] != server.tensor_address[1]
         assert server.nodes[node_id]["status"] == "initialized"
         assert server.inventory[(0, 0)]["status"] == "loading"
         with socket.create_connection(server.tensor_address, timeout=3) as tensor:
@@ -84,7 +84,7 @@ def test_ready_requires_second_port_and_snapshot_excludes_connections(olmoe_chec
 def test_missing_tensor_attachment_times_out(olmoe_checkpoint):
     with (
         server_for(olmoe_checkpoint[0], attachment_timeout=0.1) as server,
-        socket.create_connection(server.address, timeout=3) as control,
+        socket.create_connection(server.control_address, timeout=3) as control,
     ):
         confirmed = initialize_control(server, control)
         assert server.wait_for_node(confirmed["node_id"], "disconnected")
@@ -95,7 +95,7 @@ def test_missing_tensor_attachment_times_out(olmoe_checkpoint):
 def test_invalid_and_duplicate_attachments_do_not_disconnect_owner(olmoe_checkpoint):
     with (
         server_for(olmoe_checkpoint[0]) as server,
-        socket.create_connection(server.address, timeout=3) as control,
+        socket.create_connection(server.control_address, timeout=3) as control,
     ):
         confirmed = initialize_control(server, control)
         for changed in ({"session_token": "wrong"}, {"node_id": "unknown"}):
@@ -116,7 +116,7 @@ def test_either_channel_failure_clears_worker_and_inventory(olmoe_checkpoint, ch
     with (
         server_for(olmoe_checkpoint[0]) as server,
         WorkerClient(
-            server.address, server.expert_size_bytes, reconstruct_olmoe_expert
+            server.control_address, server.expert_size_bytes, reconstruct_olmoe_expert
         ) as worker,
     ):
         node_id = worker.node_id
@@ -131,7 +131,7 @@ def test_shutdown_closes_pending_connections_on_both_ports(olmoe_checkpoint):
     server = server_for(olmoe_checkpoint[0]).start()
     try:
         with (
-            socket.create_connection(server.address, timeout=3) as control,
+            socket.create_connection(server.control_address, timeout=3) as control,
             socket.create_connection(server.tensor_address, timeout=3) as tensor,
         ):
             server.close()

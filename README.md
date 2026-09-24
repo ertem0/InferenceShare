@@ -198,9 +198,9 @@ for subsequent initialization requests. Initialization uses socket operation
 timeouts rather than ready-state heartbeats. Defaults are 30 seconds for startup
 socket operations, a 1-second heartbeat interval, and a 5-second heartbeat reply
 timeout. Tensor attachment must complete within 10 seconds by default. These
-values are configurable through the Python API. `Coordinator.address` is the
+values are configurable through the Python API. `Coordinator.control_address` is the
 control endpoint; `Coordinator.tensor_address` is the separate tensor endpoint.
-`--port` remains an alias for `--control-port`. Local checkpoint reads
+Local checkpoint reads
 and reconstruction callbacks are synchronous and are not forcibly interrupted.
 
 Stop either command with Ctrl-C. Reconnecting requires a fresh worker client

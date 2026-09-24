@@ -20,18 +20,16 @@ def main():
     coordinator = commands.add_parser("coordinator")
     coordinator.add_argument("--checkpoint", required=True)
     coordinator.add_argument(
-        "--dtype", choices=["float32", "float16", "bfloat16"], default="float32"
+        "--dtype", choices=["float32", "float16", "bfloat16"], default="bfloat16"
     )
     coordinator.add_argument("--tensor-port", type=int, default=5001)
     worker = commands.add_parser("worker")
     worker.add_argument("--memory-bytes", type=int, required=True)
     for command in (coordinator, worker):
         command.add_argument("--host", default="127.0.0.1")
-        command.add_argument(
-            "--control-port", "--port", dest="port", type=int, default=5000
-        )
+        command.add_argument("--control-port", type=int, default=5000)
     args = parser.parse_args()
-    address = (args.host, args.port)
+    control_address = (args.host, args.control_port)
     try:
         if args.role == "coordinator":
             source = OlmoeExpertSource(
@@ -41,17 +39,17 @@ def main():
                 source.expert_ids,
                 source.expert_size_bytes,
                 source.prepare,
-                address=address,
+                control_address=control_address,
                 tensor_address=(args.host, args.tensor_port),
             ) as server:
                 print(
-                    f"Coordinator control at {server.address}, tensors at {server.tensor_address}; {source.expert_size_bytes} bytes per expert",
+                    f"Coordinator control at {server.control_address}, tensors at {server.tensor_address}; {source.expert_size_bytes} bytes per expert",
                     flush=True,
                 )
                 threading.Event().wait()
         else:
             with WorkerClient(
-                address, args.memory_bytes, reconstruct_olmoe_expert
+                control_address, args.memory_bytes, reconstruct_olmoe_expert
             ) as client:
                 print(
                     f"Worker {client.node_id} ready: {client.assignments}", flush=True

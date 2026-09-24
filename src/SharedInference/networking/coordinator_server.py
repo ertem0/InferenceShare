@@ -38,7 +38,7 @@ class Coordinator:
         expert_size_bytes: int,
         prepare_expert: Callable[[int, int], tuple[dict, dict[str, Tensor]]],
         *,
-        address: tuple[str, int] = ("127.0.0.1", 0),
+        control_address: tuple[str, int] = ("127.0.0.1", 0),
         tensor_address: tuple[str, int] | None = None,
         attachment_timeout: float = 10.0,
         initialization_timeout: float = 30.0,
@@ -62,8 +62,8 @@ class Coordinator:
                 )
         self.expert_size_bytes = expert_size_bytes
         self.prepare_expert = prepare_expert
-        self.address = address
-        self.tensor_address = tensor_address or (address[0], 0)
+        self.control_address = control_address
+        self.tensor_address = tensor_address or (control_address[0], 0)
         self.attachment_timeout = attachment_timeout
         self.initialization_timeout = initialization_timeout
         self.heartbeat_interval = heartbeat_interval
@@ -114,10 +114,10 @@ class Coordinator:
         if self._listeners or self._stop.is_set():
             raise RuntimeError("Coordinator has already started or closed")
         try:
-            for address in (self.address, self.tensor_address):
+            for listen_address in (self.control_address, self.tensor_address):
                 listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self._listeners.append(listener)
-                listener.bind(address)
+                listener.bind(listen_address)
                 listener.listen()
                 listener.settimeout(0.2)
         except OSError:
@@ -125,7 +125,7 @@ class Coordinator:
                 listener.close()
             self._listeners.clear()
             raise
-        self.address, self.tensor_address = [
+        self.control_address, self.tensor_address = [
             listener.getsockname() for listener in self._listeners
         ]
         for listener, handler in zip(

@@ -30,18 +30,22 @@ def test_first_unallocated_and_disconnect(olmoe_checkpoint):
     source = OlmoeExpertSource(olmoe_checkpoint[0])
     with coordinator(source) as server:
         with WorkerClient(
-            server.address, source.expert_size_bytes * 2 + 1, reconstruct_olmoe_expert
+            server.control_address,
+            source.expert_size_bytes * 2 + 1,
+            reconstruct_olmoe_expert,
         ) as first:
             assert first.assignments == ((0, 0), (0, 1))
             first_id = first.node_id
             with WorkerClient(
-                server.address, source.expert_size_bytes, reconstruct_olmoe_expert
+                server.control_address,
+                source.expert_size_bytes,
+                reconstruct_olmoe_expert,
             ) as second:
                 assert second.assignments == ((1, 0),)
                 assert server.inventory[(1, 1)]["status"] == "unallocated"
         assert server.wait_for_node(first_id, "disconnected")
         with WorkerClient(
-            server.address, source.expert_size_bytes, reconstruct_olmoe_expert
+            server.control_address, source.expert_size_bytes, reconstruct_olmoe_expert
         ) as replacement:
             assert replacement.assignments == ((0, 0),)
 
@@ -51,7 +55,9 @@ def test_budget_too_small_is_empty_ready_assignment(olmoe_checkpoint, budget):
     source = OlmoeExpertSource(olmoe_checkpoint[0])
     with (
         coordinator(source) as server,
-        WorkerClient(server.address, budget, reconstruct_olmoe_expert) as client,
+        WorkerClient(
+            server.control_address, budget, reconstruct_olmoe_expert
+        ) as client,
     ):
         assert client.assignments == ()
         assert client.ready.is_set()
@@ -63,7 +69,9 @@ def test_concurrent_reservations(olmoe_checkpoint):
     with coordinator(source) as server:
         clients = [
             WorkerClient(
-                server.address, source.expert_size_bytes * 3, reconstruct_olmoe_expert
+                server.control_address,
+                source.expert_size_bytes * 3,
+                reconstruct_olmoe_expert,
             )
             for _ in range(2)
         ]
@@ -94,7 +102,7 @@ def test_failed_experts_released_and_successes_retained(olmoe_checkpoint, reject
     with (
         coordinator(source) as server,
         WorkerClient(
-            server.address, source.expert_size_bytes * 3, reconstruct
+            server.control_address, source.expert_size_bytes * 3, reconstruct
         ) as client,
     ):
         assert client.assignments == ((0, 0), (1, 0))
@@ -125,7 +133,9 @@ def test_transient_failure_recovers(olmoe_checkpoint):
 
     with (
         coordinator(source) as server,
-        WorkerClient(server.address, source.expert_size_bytes, reconstruct) as client,
+        WorkerClient(
+            server.control_address, source.expert_size_bytes, reconstruct
+        ) as client,
     ):
         assert client.assignments == ((0, 0),)
         assert len(attempts) == 3
@@ -135,7 +145,7 @@ def test_health_timeout_releases_assignments(olmoe_checkpoint):
     source = OlmoeExpertSource(olmoe_checkpoint[0])
     with (
         coordinator(source) as server,
-        socket.create_connection(server.address, timeout=3) as connection,
+        socket.create_connection(server.control_address, timeout=3) as connection,
     ):
         send_message(
             connection,
@@ -178,7 +188,7 @@ def test_missing_checkpoint_weights_fail_explicitly(olmoe_checkpoint):
     (olmoe_checkpoint[0] / "shard-0.safetensors").unlink()
     with coordinator(source) as server:
         client = WorkerClient(
-            server.address, source.expert_size_bytes, reconstruct_olmoe_expert
+            server.control_address, source.expert_size_bytes, reconstruct_olmoe_expert
         )
         with pytest.raises(ValueError, match="FileNotFoundError"):
             client.initialize()
@@ -188,14 +198,14 @@ def test_missing_checkpoint_weights_fail_explicitly(olmoe_checkpoint):
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 def test_two_process_initialization(olmoe_checkpoint, dtype):
-    # Child receives only the address and budget, never a checkpoint path.
+    # Child receives only the control_address and budget, never a checkpoint path.
     source = OlmoeExpertSource(olmoe_checkpoint[0], dtype=dtype)
     ctx = multiprocessing.get_context("spawn")
     parent, child = ctx.Pipe()
     with coordinator(source) as server:
         process = ctx.Process(
             target=_worker_process_typed,
-            args=(server.address, source.expert_size_bytes, child, dtype),
+            args=(server.control_address, source.expert_size_bytes, child, dtype),
         )
         process.start()
         child.close()
@@ -221,8 +231,8 @@ def test_two_process_initialization(olmoe_checkpoint, dtype):
             parent.close()
 
 
-def _worker_process_typed(address, budget, pipe, dtype):
-    with WorkerClient(address, budget, reconstruct_olmoe_expert) as client:
+def _worker_process_typed(control_address, budget, pipe, dtype):
+    with WorkerClient(control_address, budget, reconstruct_olmoe_expert) as client:
         result = client.worker.execute(0, 0, torch.ones(2, 2, dtype=dtype))
         pipe.send((client.node_id, client.assignments, result.tolist()))
         assert pipe.recv() == "stop"
@@ -232,7 +242,7 @@ def _worker_process_typed(address, budget, pipe, dtype):
 def test_disconnect_during_initialization_releases_reservation(olmoe_checkpoint):
     source = OlmoeExpertSource(olmoe_checkpoint[0])
     with coordinator(source) as server:
-        with socket.create_connection(server.address, timeout=3) as connection:
+        with socket.create_connection(server.control_address, timeout=3) as connection:
             send_message(
                 connection,
                 Message.INITIALIZE,
@@ -248,7 +258,7 @@ def test_incorrect_final_confirmation_never_becomes_ready(olmoe_checkpoint):
     source = OlmoeExpertSource(olmoe_checkpoint[0])
     with (
         coordinator(source) as server,
-        socket.create_connection(server.address, timeout=3) as connection,
+        socket.create_connection(server.control_address, timeout=3) as connection,
     ):
         send_message(
             connection,
@@ -272,7 +282,7 @@ def test_initialization_timeout_releases_reservation(olmoe_checkpoint):
     source = OlmoeExpertSource(olmoe_checkpoint[0])
     with (
         coordinator(source, initialization_timeout=0.1) as server,
-        socket.create_connection(server.address, timeout=3) as connection,
+        socket.create_connection(server.control_address, timeout=3) as connection,
     ):
         send_message(
             connection,

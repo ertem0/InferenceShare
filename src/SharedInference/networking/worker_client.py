@@ -33,12 +33,14 @@ class WorkerClient:
     local experts. A failed session also discards its local registrations.
     """
 
-    def __init__(self, address, memory_budget_bytes, reconstruct, *, timeout=30.0):
+    def __init__(
+        self, control_address, memory_budget_bytes, reconstruct, *, timeout=30.0
+    ):
         if type(memory_budget_bytes) is not int or memory_budget_bytes < 0:
             raise ValueError("Memory budget must be a nonnegative integer")
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("Timeout must be positive and finite")
-        self.address = address
+        self.control_address = control_address
         self.memory_budget_bytes = memory_budget_bytes
         self.reconstruct = reconstruct
         self.timeout = timeout
@@ -61,7 +63,7 @@ class WorkerClient:
         self._started = True
         try:
             self._control_connection = socket.create_connection(
-                self.address, timeout=self.timeout
+                self.control_address, timeout=self.timeout
             )
             connection = self._control_connection
             send_message(
@@ -108,17 +110,17 @@ class WorkerClient:
                     confirmed, _ = expect_message(connection, Message.CONFIRMED)
                     if confirmed.get("node_id") != self.node_id:
                         raise ProtocolError("Confirmation identifies the wrong node")
-                    port = confirmed.get("tensor_port")
+                    tensor_port = confirmed.get("tensor_port")
                     token = confirmed.get("session_token")
                     if (
-                        type(port) is not int
-                        or not 0 < port < 65536
+                        type(tensor_port) is not int
+                        or not 0 < tensor_port < 65536
                         or not isinstance(token, str)
                         or not token
                     ):
                         raise ProtocolError("Invalid tensor connection metadata")
                     self._tensor_connection = socket.create_connection(
-                        (self.address[0], port), timeout=self.timeout
+                        (self.control_address[0], tensor_port), timeout=self.timeout
                     )
                     send_message(
                         self._tensor_connection,
