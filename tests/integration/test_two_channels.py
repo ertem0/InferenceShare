@@ -6,13 +6,13 @@ from SharedInference.model.olmoe_initialization import (
     OlmoeExpertSource,
     reconstruct_olmoe_expert,
 )
-from SharedInference.networking import Coordinator, WorkerClient
 from SharedInference.networking.protocol import (
     Message,
     expect_message,
     receive_message,
     send_message,
 )
+from SharedInference.runtime import Coordinator, WorkerClient
 
 
 def server_for(checkpoint, **kwargs):

@@ -147,7 +147,7 @@ OLMOE_CHECKPOINT_DIR="$HOME/Models/allenai/OLMoE-1B-7B-0924/6d84c48581ece794365f
 Start the coordinator in one terminal using an existing local checkpoint:
 
 ```bash
-uv run python -m SharedInference.networking.cli coordinator \
+uv run python -m SharedInference.runtime.cli coordinator \
     --checkpoint "$HOME/Models/allenai/OLMoE-1B-7B-0924/6d84c48581ece794365f2b8e9cfb043c68ade9c5" \
     --dtype float32 --control-port 5000 --tensor-port 5001
 ```
@@ -155,7 +155,7 @@ uv run python -m SharedInference.networking.cli coordinator \
 In another terminal, start a worker with a weight-storage budget in bytes:
 
 ```bash
-uv run python -m SharedInference.networking.cli worker \
+uv run python -m SharedInference.runtime.cli worker \
     --host 127.0.0.1 --control-port 5000 --memory-bytes 268435456
 ```
 
@@ -212,7 +212,8 @@ redistribution, and standalone tensor transport measurements are deferred.
 ```text
 src/SharedInference/experts/   Execution protocol, local executor, and worker
 src/SharedInference/model/    Checkpoint loading and OLMoE reconstruction adapter
-src/SharedInference/networking/ Startup coordinator, TCP protocol, and worker client
+src/SharedInference/networking/ TCP framing and weight serialization
+src/SharedInference/runtime/    Coordinator, worker sessions, and CLI
 tests/unit/                  Deterministic execution and loading tests
 tests/integration/           Optional Transformers reference comparisons
 ```

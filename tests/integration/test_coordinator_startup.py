@@ -10,9 +10,9 @@ from SharedInference.model.olmoe_initialization import (
     OlmoeExpertSource,
     reconstruct_olmoe_expert,
 )
-from SharedInference.networking import Coordinator, WorkerClient
 from SharedInference.networking.protocol import Message, expect_message, send_message
-from SharedInference.networking.worker_client import ExpertRejected
+from SharedInference.runtime import Coordinator, WorkerClient
+from SharedInference.runtime.worker_client import ExpertRejected
 
 
 def coordinator(source, **kwargs):

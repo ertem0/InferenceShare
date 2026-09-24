@@ -52,9 +52,16 @@ src/
         routing/
         experts/
         networking/
+        runtime/
         benchmarks/
 
 tests/
     unit/
     integration/
 ```
+
+`runtime/` owns startup allocation, coordinator and worker sessions, and the CLI
+entry point (`python -m SharedInference.runtime.cli`). It composes model adapters,
+local expert execution, and networking. `networking/` provides message framing
+and weight serialization. Session code currently manages TCP sockets directly;
+this layout does not introduce an additional transport abstraction.

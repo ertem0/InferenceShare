@@ -7,8 +7,7 @@ import threading
 from safetensors import SafetensorError
 
 from SharedInference.experts import ExpertWorker, IdentifiedExpert
-
-from .protocol import (
+from SharedInference.networking.protocol import (
     Message,
     ProtocolError,
     decode_weights,

@@ -11,7 +11,7 @@ from copy import deepcopy
 from safetensors import SafetensorError
 from torch import Tensor
 
-from .protocol import (
+from SharedInference.networking.protocol import (
     Message,
     ProtocolError,
     encode_weights,
