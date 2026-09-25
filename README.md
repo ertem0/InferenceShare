@@ -207,6 +207,22 @@ Stop either command with Ctrl-C. Reconnecting requires a fresh worker client
 and transfers all newly assigned weights again. Persistent caching, automatic
 redistribution, and standalone tensor transport measurements are deferred.
 
+## Runtime logs
+
+Both coordinator and worker write status logs to the console (stderr). Add
+`--log-level DEBUG` to either command for individual expert transfers, loading
+durations, and heartbeat sequence numbers. Levels are `DEBUG`, `INFO` (default),
+`WARNING`, and `ERROR`. DEBUG mode uses short local timestamps:
+
+```text
+14:32:08.123 INFO worker node=abc ready experts=7 duration_ms=245.120
+```
+
+Other levels include the date. Initialization and loading durations use a
+monotonic clock. Logs include node/expert IDs and failure reasons, without dumping
+session tokens, weights, or tensor contents. Logging is configured by the CLI;
+using the Python library leaves logging configuration to the caller.
+
 ## Project structure
 
 ```text

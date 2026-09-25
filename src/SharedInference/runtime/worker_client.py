@@ -1,8 +1,10 @@
 """Startup receiver around a local ExpertWorker; no checkpoint access."""
 
+import logging
 import math
 import socket
 import threading
+from time import perf_counter
 
 from safetensors import SafetensorError
 
@@ -18,6 +20,8 @@ from SharedInference.networking.protocol import (
     send_message,
     validate_weights,
 )
+
+logger = logging.getLogger("SharedInference.runtime.worker")
 
 
 class ExpertRejected(ValueError):
@@ -60,6 +64,12 @@ class WorkerClient:
         if self._started:
             raise RuntimeError("Worker client has already started")
         self._started = True
+        started = perf_counter()
+        logger.info(
+            "Connecting control=%s budget_bytes=%d",
+            self.control_address,
+            self.memory_budget_bytes,
+        )
         try:
             self._control_connection = socket.create_connection(
                 self.control_address, timeout=self.timeout
@@ -84,6 +94,7 @@ class WorkerClient:
             self.node_id = assignment.get("node_id")
             if not isinstance(self.node_id, str) or not self.node_id:
                 raise ProtocolError("Missing node identity")
+            logger.info("node=%s assigned_experts=%d", self.node_id, len(assigned))
             interval = assignment.get("heartbeat_interval")
             health_timeout = assignment.get("health_timeout")
             for value in (interval, health_timeout):
@@ -105,6 +116,13 @@ class WorkerClient:
                         raise ProtocolError(
                             "Final assignment must match successfully loaded experts"
                         )
+                    if len(final) != len(assigned):
+                        logger.warning(
+                            "node=%s confirming reduced assignment retained=%d released=%d",
+                            self.node_id,
+                            len(final),
+                            len(assigned) - len(final),
+                        )
                     send_message(connection, Message.READY, {"experts": final})
                     confirmed, _ = expect_message(connection, Message.CONFIRMED)
                     if confirmed.get("node_id") != self.node_id:
@@ -118,6 +136,11 @@ class WorkerClient:
                         or not token
                     ):
                         raise ProtocolError("Invalid tensor connection metadata")
+                    logger.info(
+                        "node=%s initialization confirmed; connecting tensor_port=%d",
+                        self.node_id,
+                        tensor_port,
+                    )
                     self._tensor_connection = socket.create_connection(
                         (self.control_address[0], tensor_port), timeout=self.timeout
                     )
@@ -136,9 +159,16 @@ class WorkerClient:
                         raise ProtocolError(
                             "Tensor attachment identifies the wrong node"
                         )
+                    logger.info("node=%s tensor channel attached", self.node_id)
                     self._tensor_connection.settimeout(None)
                     self.assignments = tuple(final)
                     self.ready.set()
+                    logger.info(
+                        "node=%s ready experts=%d duration_ms=%.3f",
+                        self.node_id,
+                        len(final),
+                        (perf_counter() - started) * 1000,
+                    )
                     connection.settimeout(interval + health_timeout + self.timeout)
                     self._thread = threading.Thread(target=self._monitor, daemon=True)
                     self._tensor_thread = threading.Thread(
@@ -155,6 +185,13 @@ class WorkerClient:
                 attempts[item] = attempts.get(item, 0) + 1
                 if attempts[item] > 3:
                     raise ProtocolError("Exceeded expert transfer attempt limit")
+                load_started = perf_counter()
+                logger.debug(
+                    "node=%s expert=%s received attempt=%d/3",
+                    self.node_id,
+                    item,
+                    attempts[item],
+                )
                 status, error = "loaded", None
                 if item not in loaded:
                     try:
@@ -192,6 +229,22 @@ class WorkerClient:
                     finally:
                         # Do not retain failed weights or an extra serialized expert.
                         weights = expert = None
+                if status == "loaded":
+                    logger.debug(
+                        "node=%s expert=%s loaded duration_ms=%.3f",
+                        self.node_id,
+                        item,
+                        (perf_counter() - load_started) * 1000,
+                    )
+                else:
+                    logger.warning(
+                        "node=%s expert=%s status=%s attempt=%d/3 error=%s; reporting to coordinator",
+                        self.node_id,
+                        item,
+                        status,
+                        attempts[item],
+                        error,
+                    )
                 payload = b""
                 send_message(
                     connection,
@@ -207,6 +260,11 @@ class WorkerClient:
             SafetensorError,
         ) as exc:
             self.error = f"{type(exc).__name__}: {exc}"
+            logger.error(
+                "node=%s initialization failed: %s",
+                self.node_id or "unassigned",
+                self.error,
+            )
             self.close()
             raise
 
@@ -215,6 +273,11 @@ class WorkerClient:
             while not self._stop.is_set():
                 metadata, _ = expect_message(self._control_connection, Message.PING)
                 send_message(self._control_connection, Message.PONG, metadata)
+                logger.debug(
+                    "node=%s heartbeat replied sequence=%s",
+                    self.node_id,
+                    metadata.get("sequence"),
+                )
         except (OSError, ValueError) as exc:
             self._end_session(exc)
         finally:
@@ -237,6 +300,14 @@ class WorkerClient:
                 return
             if error is not None:
                 self.error = f"{type(error).__name__}: {error}"
+                logger.warning(
+                    "node=%s connection lost: %s; closing both channels",
+                    self.node_id,
+                    self.error,
+                )
+            logger.info(
+                "node=%s stopping; clearing local experts", self.node_id or "unassigned"
+            )
             self.ready.clear()
             self.assignments = ()
             self.worker = ExpertWorker()

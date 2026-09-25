@@ -1,5 +1,6 @@
 """Memory-budgeted startup allocation and per-connection worker health."""
 
+import logging
 import math
 import secrets
 import socket
@@ -7,6 +8,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable
 from copy import deepcopy
+from time import perf_counter
 
 from safetensors import SafetensorError
 from torch import Tensor
@@ -22,6 +24,8 @@ from SharedInference.networking.protocol import (
     send_message,
     validate_weights,
 )
+
+logger = logging.getLogger("SharedInference.runtime.coordinator")
 
 
 class Coordinator:
@@ -136,6 +140,12 @@ class Coordinator:
             )
             self._accept_threads.append(thread)
             thread.start()
+        logger.info(
+            "Listening control=%s tensor=%s expert_size_bytes=%d",
+            self.control_address,
+            self.tensor_address,
+            self.expert_size_bytes,
+        )
         return self
 
     def _accept(self, listener, handler):
@@ -186,6 +196,7 @@ class Coordinator:
     def _serve(self, connection):
         node_id = uuid.uuid4().hex
         failure = None
+        started = perf_counter()
         try:
             connection.settimeout(self.initialization_timeout)
             request, _ = expect_message(connection, Message.INITIALIZE)
@@ -193,6 +204,12 @@ class Coordinator:
             if type(budget) is not int or budget < 0:
                 raise ProtocolError("Memory budget must be a nonnegative integer")
             assigned = self._reserve(node_id, budget, connection)
+            logger.info(
+                "node=%s registered budget_bytes=%d assigned_experts=%d",
+                node_id,
+                budget,
+                len(assigned),
+            )
             send_message(
                 connection,
                 Message.ASSIGN,
@@ -214,6 +231,13 @@ class Coordinator:
                 payload = encode_weights(weights)
                 del weights
                 for attempt in range(1, 4):
+                    logger.debug(
+                        "node=%s expert=%s sending weights attempt=%d/3 payload_bytes=%d",
+                        node_id,
+                        item,
+                        attempt,
+                        len(payload),
+                    )
                     send_message(
                         connection,
                         Message.WEIGHTS,
@@ -229,12 +253,29 @@ class Coordinator:
                         raise ProtocolError("Load report identifies the wrong expert")
                     status = result.get("status")
                     if status == "loaded":
+                        logger.debug(
+                            "node=%s expert=%s loaded attempt=%d/3",
+                            node_id,
+                            item,
+                            attempt,
+                        )
                         successful.append(item)
                         break
                     if status not in ("failed", "rejected") or not isinstance(
                         result.get("error"), str
                     ):
                         raise ProtocolError("Invalid expert load result")
+                    logger.warning(
+                        "node=%s expert=%s status=%s attempt=%d/3 error=%s; %s",
+                        node_id,
+                        item,
+                        status,
+                        attempt,
+                        result["error"],
+                        "retrying"
+                        if status == "failed" and attempt < 3
+                        else "releasing assignment",
+                    )
                     if status == "rejected":
                         break
                 del payload
@@ -242,6 +283,13 @@ class Coordinator:
             with self._condition:
                 for item in set(assigned) - set(successful):
                     self._inventory[item] = {"node_id": None, "status": "unallocated"}
+            if len(successful) != len(assigned):
+                logger.warning(
+                    "node=%s reduced assignment retained=%d released=%d",
+                    node_id,
+                    len(successful),
+                    len(assigned) - len(successful),
+                )
             send_message(connection, Message.FINALIZE, {"experts": successful})
             ready, _ = expect_message(connection, Message.READY)
             if identities(ready.get("experts")) != successful:
@@ -264,6 +312,10 @@ class Coordinator:
                     "tensor_port": self.tensor_address[1],
                 },
             )
+            logger.info(
+                "node=%s initialization confirmed; waiting for tensor attachment",
+                node_id,
+            )
             with self._condition:
                 attached = self._condition.wait_for(
                     lambda: (
@@ -276,6 +328,12 @@ class Coordinator:
                     raise TimeoutError("Tensor connection attachment timed out")
                 if self._nodes[node_id]["status"] != "ready" or self._stop.is_set():
                     return
+            logger.info(
+                "node=%s ready experts=%d duration_ms=%.3f",
+                node_id,
+                len(successful),
+                (perf_counter() - started) * 1000,
+            )
             connection.settimeout(self.health_timeout)
             sequence = 0
             while not self._stop.wait(self.heartbeat_interval):
@@ -283,6 +341,9 @@ class Coordinator:
                 pong, _ = expect_message(connection, Message.PONG)
                 if pong.get("sequence") != sequence:
                     raise ProtocolError("Invalid heartbeat acknowledgment")
+                logger.debug(
+                    "node=%s heartbeat acknowledged sequence=%d", node_id, sequence
+                )
                 sequence += 1
         except (
             OSError,
@@ -293,6 +354,15 @@ class Coordinator:
             SafetensorError,
         ) as exc:
             failure = f"{type(exc).__name__}: {exc}"
+            if not self._stop.is_set():
+                logger.log(
+                    logging.WARNING
+                    if isinstance(exc, (ConnectionError, TimeoutError))
+                    else logging.ERROR,
+                    "node=%s control session failed: %s",
+                    node_id,
+                    failure,
+                )
             try:
                 send_message(connection, Message.ERROR, {"error": failure})
             except OSError:
@@ -336,6 +406,7 @@ class Coordinator:
                     if entry["node_id"] == node_id:
                         entry["status"] = "ready"
                 self._condition.notify_all()
+            logger.info("node=%s tensor channel attached", node_id)
             # No inference messages exist yet. Own this channel's reader so EOF
             # tears down the whole session; later milestones add dispatch here.
             connection.settimeout(None)
@@ -343,6 +414,12 @@ class Coordinator:
             raise ProtocolError("Tensor execution messages are not implemented yet")
         except (OSError, ValueError) as exc:
             failure = f"{type(exc).__name__}: {exc}"
+            if not self._stop.is_set():
+                logger.warning(
+                    "node=%s tensor connection failed: %s",
+                    node_id or "unidentified",
+                    failure,
+                )
             try:
                 send_message(connection, Message.ERROR, {"error": failure})
             except OSError:
@@ -360,9 +437,12 @@ class Coordinator:
             node = self._nodes.get(node_id)
             if node is None or node["status"] == "disconnected":
                 return
+            released = 0
             for entry in self._inventory.values():
                 if entry["node_id"] == node_id:
+                    released += 1
                     entry.update(node_id=None, status="unallocated")
+            logger.info("node=%s disconnected; released_experts=%d", node_id, released)
             node.update(status="disconnected", error=failure, session_token=None)
             for channel in ("control_connection", "tensor_connection"):
                 connection = node[channel]
@@ -375,6 +455,8 @@ class Coordinator:
             self._condition.notify_all()
 
     def close(self):
+        if not self._stop.is_set():
+            logger.info("Coordinator shutting down")
         self._stop.set()
         for listener in self._listeners:
             listener.close()

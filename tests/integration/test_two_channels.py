@@ -145,3 +145,30 @@ def test_shutdown_closes_pending_connections_on_both_ports(olmoe_checkpoint):
                     pass
     finally:
         server.close()
+
+
+def test_coordinator_and_worker_log_session_without_tokens(olmoe_checkpoint, caplog):
+    caplog.set_level("DEBUG", logger="SharedInference")
+    with (
+        server_for(olmoe_checkpoint[0]) as server,
+        WorkerClient(
+            server.control_address, server.expert_size_bytes, reconstruct_olmoe_expert
+        ) as worker,
+    ):
+        node_id = worker.node_id
+        with server._condition:
+            token = server._nodes[node_id]["session_token"]
+    records = [(record.name, record.getMessage()) for record in caplog.records]
+    assert any(
+        name.endswith(".coordinator") and f"node={node_id} registered" in message
+        for name, message in records
+    )
+    assert any(
+        name.endswith(".worker")
+        and f"node={node_id} ready" in message
+        and "duration_ms=" in message
+        for name, message in records
+    )
+    assert any("released_experts=1" in message for _, message in records)
+    assert token not in caplog.text
+    assert "session_token" not in caplog.text

@@ -1,6 +1,7 @@
 """Run a local startup coordinator or a worker waiting for execution."""
 
 import argparse
+import logging
 import threading
 
 import torch
@@ -11,7 +12,10 @@ from SharedInference.model.olmoe_initialization import (
 )
 
 from .coordinator_server import Coordinator
+from .logging_config import configure_logging
 from .worker_client import WorkerClient
+
+logger = logging.getLogger("SharedInference.runtime.cli")
 
 
 def main():
@@ -32,7 +36,7 @@ def main():
         "coordinator",
         help="Assign experts from a local checkpoint and initialize workers.",
         description=(
-            "Load assigned OLMoE experts from a local checkpoint and send them to workers. "
+            "Load assigned experts from a local checkpoint and send them to workers. "
             "Listen on separate control and tensor ports, then monitor worker health."
         ),
         epilog="The checkpoint must already be downloaded. Press Ctrl-C to stop.",
@@ -41,7 +45,7 @@ def main():
         "--checkpoint",
         required=True,
         metavar="PATH",
-        help="Local OLMoE checkpoint directory containing config, index, and Safetensors shards.",
+        help="Local model checkpoint directory containing configuration and expert weights.",
     )
     coordinator.add_argument(
         "--dtype",
@@ -92,7 +96,14 @@ def main():
             default=5000,
             help="Coordinator TCP port for initialization and heartbeats (default: %(default)s).",
         )
+        command.add_argument(
+            "--log-level",
+            choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+            default="INFO",
+            help="Console verbosity; DEBUG includes heartbeats and short timestamps (default: %(default)s).",
+        )
     args = parser.parse_args()
+    configure_logging(args.log_level)
     control_address = (args.host, args.control_port)
     try:
         if args.role == "coordinator":
@@ -105,24 +116,20 @@ def main():
                 source.prepare,
                 control_address=control_address,
                 tensor_address=(args.host, args.tensor_port),
-            ) as server:
-                print(
-                    f"Coordinator control at {server.control_address}, tensors at {server.tensor_address}; {source.expert_size_bytes} bytes per expert",
-                    flush=True,
-                )
+            ):
                 threading.Event().wait()
         else:
             with WorkerClient(
                 control_address, args.memory_bytes, reconstruct_olmoe_expert
             ) as client:
-                print(
-                    f"Worker {client.node_id} ready: {client.assignments}", flush=True
-                )
                 client.wait_until_disconnected()
                 if client.error:
                     raise RuntimeError(client.error)
     except KeyboardInterrupt:
-        pass  # Context managers close connections and release assignments.
+        logger.info("Shutdown requested")
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        logger.error("%s failed: %s", args.role, exc)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
