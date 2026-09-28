@@ -56,7 +56,7 @@ def main():
     coordinator.add_argument(
         "--tensor-port",
         type=int,
-        default=5001,
+        default=5002,
         help="TCP listening port reserved for tensor traffic; must differ from the control port (default: %(default)s).",
     )
     worker = commands.add_parser(
@@ -93,7 +93,7 @@ def main():
         command.add_argument(
             "--control-port",
             type=int,
-            default=5000,
+            default=5001,
             help="Coordinator TCP port for initialization and heartbeats (default: %(default)s).",
         )
         command.add_argument(
